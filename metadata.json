@@ -1,0 +1,6 @@
+{
+  "name": "Contador de Pasos",
+  "description": "Aplicación ultra eficiente para contar pasos diarios con gráficos semanales/mensuales, widgets y personalización de temas y formato de gráficos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
