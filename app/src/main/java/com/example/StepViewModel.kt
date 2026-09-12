@@ -161,11 +161,15 @@ class StepViewModel(application: Application) : AndroidViewModel(application) {
             
             // Send intent to service to sync notification and widget
             val context = getApplication<Application>()
-            val intent = Intent(context, StepService::class.java).apply {
-                action = StepService.ACTION_ADD_MANUAL_STEPS
-                putExtra(StepService.EXTRA_STEPS_TO_ADD, count)
+            try {
+                val intent = Intent(context, StepService::class.java).apply {
+                    action = StepService.ACTION_ADD_MANUAL_STEPS
+                    putExtra(StepService.EXTRA_STEPS_TO_ADD, count)
+                }
+                context.startService(intent)
+            } catch (e: Exception) {
+                // Service may not be running or background restricted
             }
-            context.startService(intent)
         }
     }
 

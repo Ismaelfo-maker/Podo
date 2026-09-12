@@ -19,6 +19,7 @@ import android.hardware.SensorManager
 import android.os.Build
 import android.os.IBinder
 import android.os.SystemClock
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.example.data.AppDatabase
 import com.example.data.DayStepEntry
@@ -45,6 +46,7 @@ class StepService : Service(), SensorEventListener {
     private var dateChangeReceiver: BroadcastReceiver? = null
 
     companion object {
+        private const val TAG = "StepService"
         private const val CHANNEL_ID = "step_counter_channel_silent"
         private const val NOTIFICATION_ID = 1001
         private const val PREFS_NAME = "step_counter_prefs"
@@ -67,10 +69,14 @@ class StepService : Service(), SensorEventListener {
 
         // Register hardware step sensor with batching
         stepCounterSensor?.let { sensor ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL, 5_000_000)
-            } else {
-                sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                    sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL, 5_000_000)
+                } else {
+                    sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error registering step sensor listener: ${e.message}", e)
             }
         }
 
@@ -140,10 +146,21 @@ class StepService : Service(), SensorEventListener {
 
     private fun startInForeground() {
         val notification = buildSilentNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "SecurityException starting foreground service with type health: ${e.message}", e)
+            try {
+                startForeground(NOTIFICATION_ID, notification)
+            } catch (e2: Exception) {
+                Log.e(TAG, "Fallback startForeground failed: ${e2.message}", e2)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting foreground service: ${e.message}", e)
         }
     }
 
