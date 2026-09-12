@@ -59,6 +59,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         checkAndRequestPermissions()
 
+        // Schedule JobScheduler task for guaranteed 00:00 midnight reset
+        MidnightResetJobService.scheduleMidnightReset(this)
+
         setContent {
             val currentTheme by viewModel.themeStyle.collectAsState()
 

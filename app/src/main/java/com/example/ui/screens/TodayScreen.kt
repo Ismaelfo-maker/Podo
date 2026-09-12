@@ -49,20 +49,19 @@ fun TodayScreen(viewModel: StepViewModel) {
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Live Sensor Status & Real Step Testing Bar
-        Row(
+        // Live Sensor Status Bar
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+                .padding(bottom = 8.dp),
+            contentAlignment = Alignment.Center
         ) {
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
@@ -79,21 +78,6 @@ fun TodayScreen(viewModel: StepViewModel) {
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
-            }
-
-            FilledTonalButton(
-                onClick = { viewModel.addManualSteps(100) },
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                modifier = Modifier.testTag("add_test_steps_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.DirectionsWalk,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("+100 pasos", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             }
         }
 

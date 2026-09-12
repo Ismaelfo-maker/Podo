@@ -12,6 +12,11 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.Typeface
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -21,6 +26,7 @@ import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.graphics.drawable.IconCompat
 import com.example.data.AppDatabase
 import com.example.data.DayStepEntry
 import com.example.widget.StepWidgetProvider
@@ -31,6 +37,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.time.LocalDate
+import java.util.Locale
 
 class StepService : Service(), SensorEventListener {
 
@@ -50,7 +57,7 @@ class StepService : Service(), SensorEventListener {
 
     companion object {
         private const val TAG = "StepService"
-        private const val CHANNEL_ID = "step_counter_channel_silent"
+        private const val CHANNEL_ID = "step_counter_channel_v4"
         private const val NOTIFICATION_ID = 1001
         private const val PREFS_NAME = "step_counter_prefs"
         private const val KEY_LAST_DATE = "last_date"
@@ -81,6 +88,9 @@ class StepService : Service(), SensorEventListener {
 
         createNotificationChannel()
         startInForeground()
+
+        // Schedule JobScheduler task for guaranteed midnight reset
+        MidnightResetJobService.scheduleMidnightReset(this)
 
         // Register system broadcast receiver for midnight date/time changes
         registerDateChangeReceiver()
@@ -161,7 +171,7 @@ class StepService : Service(), SensorEventListener {
                 editor.apply()
                 updateDatabaseAndWidget(currentDateString, newSteps)
             }
-            ACTION_RESET_ALL_STEPS, ACTION_RESET_TODAY_STEPS -> {
+            ACTION_DAY_RESET, ACTION_RESET_ALL_STEPS, ACTION_RESET_TODAY_STEPS -> {
                 val lastKnownTotal = prefs.getInt(KEY_LAST_KNOWN_TOTAL_STEPS, 0)
                 val editor = prefs.edit()
                     .putInt(KEY_TODAY_STEPS, 0)
@@ -200,7 +210,8 @@ class StepService : Service(), SensorEventListener {
     }
 
     private fun startInForeground() {
-        val notification = buildSilentNotification()
+        val currentSteps = prefs.getInt(KEY_TODAY_STEPS, 0)
+        val notification = buildStepsNotification(currentSteps)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH)
@@ -364,6 +375,7 @@ class StepService : Service(), SensorEventListener {
             database.stepDao().insertOrUpdate(DayStepEntry(dateString, steps, steps >= currentDailyGoal))
         }
         updateWidget(steps)
+        updateNotification(steps)
     }
 
     private fun updateWidget(steps: Int) {
@@ -375,11 +387,60 @@ class StepService : Service(), SensorEventListener {
         sendBroadcast(widgetIntent)
     }
 
+    private fun updateNotification(steps: Int) {
+        try {
+            val notification = buildStepsNotification(steps)
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.notify(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error updating notification: ${e.message}", e)
+        }
+    }
+
     /**
-     * Builds a completely silent notification that does not appear in the status bar
-     * (uses IMPORTANCE_MIN, PRIORITY_MIN, and transparent icon).
+     * Generates a clean dynamic small icon rendering the step number for the notification shade.
      */
-    private fun buildSilentNotification(): Notification {
+    private fun createStepNumberIcon(steps: Int): IconCompat {
+        return try {
+            val density = resources.displayMetrics.density
+            val sizePx = (24 * density).toInt().coerceAtLeast(48)
+            val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+
+            val text = when {
+                steps < 1000 -> steps.toString()
+                steps < 10000 -> String.format(Locale.US, "%.1fk", steps / 1000.0)
+                else -> "${steps / 1000}k"
+            }
+
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.WHITE
+                textAlign = Paint.Align.CENTER
+                textSize = when (text.length) {
+                    1, 2 -> sizePx * 0.70f
+                    3 -> sizePx * 0.54f
+                    else -> sizePx * 0.42f
+                }
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+
+            val textBounds = Rect()
+            paint.getTextBounds(text, 0, text.length, textBounds)
+            val y = (sizePx / 2f) + (textBounds.height() / 2f) - textBounds.bottom
+            canvas.drawText(text, sizePx / 2f, y, paint)
+
+            IconCompat.createWithBitmap(bitmap)
+        } catch (e: Exception) {
+            IconCompat.createWithResource(this, R.drawable.ic_footprint_stat)
+        }
+    }
+
+    /**
+     * Builds the notification that displays the step count and small step-number icon.
+     * Uses IMPORTANCE_MIN so that it is completely hidden from the status bar when closed
+     * and only visible when the user pulls down the notification shade.
+     */
+    private fun buildStepsNotification(steps: Int): Notification {
         val launchIntent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -388,10 +449,15 @@ class StepService : Service(), SensorEventListener {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val smallIcon = createStepNumberIcon(steps)
+        val formattedSteps = String.format(Locale.US, "%,d", steps)
+        val formattedGoal = String.format(Locale.US, "%,d", currentDailyGoal)
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_transparent)
-            .setContentTitle(null)
-            .setContentText(null)
+            .setSmallIcon(smallIcon)
+            .setContentTitle("$formattedSteps pasos")
+            .setContentText("Meta diaria: $formattedGoal pasos")
+            .setNumber(steps)
             .setShowWhen(false)
             .setOngoing(true)
             .setSilent(true)
@@ -405,19 +471,24 @@ class StepService : Service(), SensorEventListener {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            try {
+                notificationManager.deleteNotificationChannel("step_counter_channel")
+                notificationManager.deleteNotificationChannel("step_counter_channel_silent")
+            } catch (e: Exception) {}
+
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Servicio de Pasos en Segundo Plano",
                 NotificationManager.IMPORTANCE_MIN
             ).apply {
-                description = "Servicio silencioso de conteo de pasos sin icono en la barra de estado"
+                description = "Muestra el número de pasos en la barra de notificaciones sin icono en la barra oculta"
                 setShowBadge(false)
                 lockscreenVisibility = Notification.VISIBILITY_SECRET
                 enableLights(false)
                 enableVibration(false)
                 setSound(null, null)
             }
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.createNotificationChannel(channel)
         }
     }

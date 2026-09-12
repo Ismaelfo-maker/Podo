@@ -192,70 +192,102 @@ fun FootprintTrailLandscape(
                 ((currentSteps - totalOutwardSteps) / totalOutwardSteps).coerceIn(0f, 1.2f)
             } else 0f
 
-            // Outward Footprints following the light brown mountain trail
-            val maxOutwardFootprints = 34
-            val countOutwardToDraw = (outwardRatio * maxOutwardFootprints).toInt()
+            // Outward Footprints: Non-overlapping sequence with perspective-scaled stride and gradual size
             val pmOutward = PathMeasure()
             pmOutward.setPath(outwardPath, false)
             val outwardLength = pmOutward.length
 
-            for (i in 0 until countOutwardToDraw) {
-                val fraction = (i + 1).toFloat() / maxOutwardFootprints
-                val distance = fraction * outwardLength
-                val pos = pmOutward.getPosition(distance)
-                val tangent = pmOutward.getTangent(distance)
+            val outwardNodes = mutableListOf<PathFootprintNode>()
+            var distOutward = 10.dp.toPx()
+            var isLeftOutward = false
+            while (distOutward < outwardLength - 6.dp.toPx()) {
+                val pos = pmOutward.getPosition(distOutward)
+                val tangent = pmOutward.getTangent(distOutward)
                 val angleRad = atan2(tangent.y, tangent.x)
 
-                // Scale footprint size according to perspective: wider at bottom, smaller towards summit
-                val footScale = (0.28f + 0.95f * (pos.y / h)).coerceIn(0.28f, 1.30f)
+                // Gradual perspective scaling: smaller as ascending towards summit (y=0.09h), larger at base (y=0.96h)
+                val heightFraction = ((pos.y - h * 0.09f) / (h * 0.96f - h * 0.09f)).coerceIn(0f, 1f)
+                val footScale = (0.24f + 0.52f * heightFraction).coerceIn(0.24f, 0.76f)
 
-                val isLeftFoot = i % 2 == 0
-                val sideOffset = (if (isLeftFoot) -6.dp.toPx() else 6.dp.toPx()) * footScale
+                // Alternating left/right step separation scaled with perspective to stay strictly on the trail
+                val sideOffset = (if (isLeftOutward) -4.5f.dp.toPx() else 4.5f.dp.toPx()) * footScale
                 val perpX = -tangent.y * sideOffset
                 val perpY = tangent.x * sideOffset
-
                 val footprintPos = Offset(pos.x + perpX, pos.y + perpY)
 
+                outwardNodes.add(
+                    PathFootprintNode(
+                        position = footprintPos,
+                        angleRad = angleRad,
+                        scale = footScale,
+                        isLeft = isLeftOutward
+                    )
+                )
+
+                isLeftOutward = !isLeftOutward
+                // Stride advance proportional to foot scale so footprints never bunch up or collide
+                val advance = (28.dp.toPx() * footScale).coerceAtLeast(8.dp.toPx())
+                distOutward += advance
+            }
+
+            val countOutwardToDraw = (outwardRatio * outwardNodes.size).toInt().coerceAtMost(outwardNodes.size)
+            for (i in 0 until countOutwardToDraw) {
+                val node = outwardNodes[i]
                 drawIconFootprint(
                     image = footBitmap,
-                    center = footprintPos,
-                    angleRad = angleRad,
-                    isLeftFoot = isLeftFoot,
-                    scale = footScale,
+                    center = node.position,
+                    angleRad = node.angleRad,
+                    isLeftFoot = node.isLeft,
+                    scale = node.scale,
                     alpha = 0.96f
                 )
             }
 
             // Return Footprints along the alternative path when goal is exceeded
             if (returnRatio > 0f) {
-                val maxReturnFootprints = 34
-                val countReturnToDraw = (returnRatio * maxReturnFootprints).toInt().coerceAtMost(maxReturnFootprints)
                 val pmReturn = PathMeasure()
                 pmReturn.setPath(returnPath, false)
                 val returnLength = pmReturn.length
 
-                for (i in 0 until countReturnToDraw) {
-                    val fraction = (i + 1).toFloat() / maxReturnFootprints
-                    val distance = fraction * returnLength
-                    val pos = pmReturn.getPosition(distance)
-                    val tangent = pmReturn.getTangent(distance)
+                val returnNodes = mutableListOf<PathFootprintNode>()
+                var distReturn = 10.dp.toPx()
+                var isLeftReturn = false
+                while (distReturn < returnLength - 6.dp.toPx()) {
+                    val pos = pmReturn.getPosition(distReturn)
+                    val tangent = pmReturn.getTangent(distReturn)
                     val angleRad = atan2(tangent.y, tangent.x)
 
-                    val footScale = (0.28f + 0.95f * (pos.y / h)).coerceIn(0.28f, 1.30f)
+                    val heightFraction = ((pos.y - h * 0.09f) / (h * 0.96f - h * 0.09f)).coerceIn(0f, 1f)
+                    val footScale = (0.24f + 0.52f * heightFraction).coerceIn(0.24f, 0.76f)
 
-                    val isLeftFoot = i % 2 == 0
-                    val sideOffset = (if (isLeftFoot) -6.dp.toPx() else 6.dp.toPx()) * footScale
+                    val sideOffset = (if (isLeftReturn) -4.5f.dp.toPx() else 4.5f.dp.toPx()) * footScale
                     val perpX = -tangent.y * sideOffset
                     val perpY = tangent.x * sideOffset
-
                     val footprintPos = Offset(pos.x + perpX, pos.y + perpY)
 
+                    returnNodes.add(
+                        PathFootprintNode(
+                            position = footprintPos,
+                            angleRad = angleRad,
+                            scale = footScale,
+                            isLeft = isLeftReturn
+                        )
+                    )
+
+                    isLeftReturn = !isLeftReturn
+                    val advance = (28.dp.toPx() * footScale).coerceAtLeast(8.dp.toPx())
+                    distReturn += advance
+                }
+
+                val countReturnToDraw = (returnRatio * returnNodes.size).toInt().coerceAtMost(returnNodes.size)
+                for (i in 0 until countReturnToDraw) {
+                    val node = returnNodes[i]
                     drawIconFootprint(
                         image = footBitmap,
-                        center = footprintPos,
-                        angleRad = angleRad,
-                        isLeftFoot = isLeftFoot,
-                        scale = footScale,
+                        center = node.position,
+                        angleRad = node.angleRad,
+                        isLeftFoot = node.isLeft,
+                        scale = node.scale,
                         alpha = 1.0f,
                         isGoldenGlow = true
                     )
@@ -529,3 +561,11 @@ private fun DrawScope.drawIconFootprint(
         }
     }
 }
+
+private data class PathFootprintNode(
+    val position: Offset,
+    val angleRad: Float,
+    val scale: Float,
+    val isLeft: Boolean
+)
+
