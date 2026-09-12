@@ -92,12 +92,26 @@ class StepViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
-        // Pre-populate sample historical data if first launch so user can see charts right away
+        // Guarantee clean start with ONLY real data: remove all fictitious / mock data
         viewModelScope.launch(Dispatchers.IO) {
-            val existing = stepDao.getEntryByDate(todayDateString)
-            val all = stepDao.getEntryByDate(LocalDate.now().minusDays(1).toString())
-            if (existing == null && all == null) {
-                seedHistoricalData()
+            val todayStr = LocalDate.now().toString()
+            if (!userPreferences.hasCleanedFakeData()) {
+                // One-time complete purge of old fictitious entries
+                stepDao.deleteAll()
+                stepDao.insertOrUpdate(DayStepEntry(todayStr, 0, false))
+                userPreferences.setHasCleanedFakeData(true)
+                try {
+                    val context = getApplication<Application>()
+                    val intent = Intent(context, StepService::class.java).apply {
+                        action = StepService.ACTION_RESET_ALL_STEPS
+                    }
+                    context.startService(intent)
+                } catch (e: Exception) {}
+            } else {
+                val existing = stepDao.getEntryByDate(todayStr)
+                if (existing == null) {
+                    stepDao.insertOrUpdate(DayStepEntry(todayStr, 0, false))
+                }
             }
         }
         // Continuous check to guarantee automatic midnight reset
@@ -125,14 +139,42 @@ class StepViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun seedHistoricalData() {
-        val today = LocalDate.now()
-        val goal = dailyGoal.value
-        for (i in 30 downTo 0) {
-            val d = today.minusDays(i.toLong())
-            val dStr = d.toString()
-            val steps = if (i == 0) 4280 else Random.nextInt(4500, 13800)
-            stepDao.insertOrUpdate(DayStepEntry(dStr, steps, steps >= goal))
+    fun deleteAllHistory() {
+        viewModelScope.launch(Dispatchers.IO) {
+            stepDao.deleteAll()
+            val todayStr = LocalDate.now().toString()
+            _currentDate.value = todayStr
+            stepDao.insertOrUpdate(DayStepEntry(todayStr, 0, false))
+
+            val context = getApplication<Application>()
+            try {
+                val intent = Intent(context, StepService::class.java).apply {
+                    action = StepService.ACTION_RESET_ALL_STEPS
+                }
+                context.startService(intent)
+            } catch (e: Exception) {
+                // Service may not be running
+            }
+        }
+    }
+
+    fun deleteHistoryEntry(date: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            stepDao.deleteByDate(date)
+            val todayStr = LocalDate.now().toString()
+            if (date == todayStr) {
+                // Reset today to 0 steps
+                stepDao.insertOrUpdate(DayStepEntry(todayStr, 0, false))
+                val context = getApplication<Application>()
+                try {
+                    val intent = Intent(context, StepService::class.java).apply {
+                        action = StepService.ACTION_RESET_TODAY_STEPS
+                    }
+                    context.startService(intent)
+                } catch (e: Exception) {
+                    // Service may not be running
+                }
+            }
         }
     }
 

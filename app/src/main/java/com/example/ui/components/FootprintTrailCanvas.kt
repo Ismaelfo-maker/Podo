@@ -292,7 +292,8 @@ fun FootprintTrailLandscape(
                                 text = String.format("%,d", steps),
                                 fontSize = 28.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.testTag("today_steps_count_display")
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(

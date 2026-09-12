@@ -76,9 +76,18 @@ class UserPreferences(context: Context) {
         _dailyGoal.value = goal
     }
 
+    fun hasCleanedFakeData(): Boolean {
+        return prefs.getBoolean(KEY_HAS_CLEANED_FAKE_DATA, false)
+    }
+
+    fun setHasCleanedFakeData(cleaned: Boolean) {
+        prefs.edit().putBoolean(KEY_HAS_CLEANED_FAKE_DATA, cleaned).apply()
+    }
+
     companion object {
         private const val KEY_THEME_STYLE = "theme_style"
         private const val KEY_CHART_STYLE = "chart_style"
         private const val KEY_DAILY_GOAL = "daily_goal"
+        private const val KEY_HAS_CLEANED_FAKE_DATA = "has_cleaned_fake_data_v2"
     }
 }

@@ -36,6 +36,8 @@ class StepService : Service(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
     private var stepCounterSensor: Sensor? = null
+    private var stepDetectorSensor: Sensor? = null
+    private var accelerometerSensor: Sensor? = null
     private lateinit var prefs: SharedPreferences
     private lateinit var database: AppDatabase
 
@@ -44,6 +46,7 @@ class StepService : Service(), SensorEventListener {
 
     private var currentDailyGoal = 10000
     private var dateChangeReceiver: BroadcastReceiver? = null
+    private var lastAccelStepTimeMs = 0L
 
     companion object {
         private const val TAG = "StepService"
@@ -58,6 +61,8 @@ class StepService : Service(), SensorEventListener {
         const val ACTION_ADD_MANUAL_STEPS = "com.example.ADD_MANUAL_STEPS"
         const val EXTRA_STEPS_TO_ADD = "extra_steps_to_add"
         const val ACTION_DAY_RESET = "com.example.ACTION_DAY_RESET"
+        const val ACTION_RESET_ALL_STEPS = "com.example.ACTION_RESET_ALL_STEPS"
+        const val ACTION_RESET_TODAY_STEPS = "com.example.ACTION_RESET_TODAY_STEPS"
     }
 
     override fun onCreate() {
@@ -65,20 +70,14 @@ class StepService : Service(), SensorEventListener {
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         database = AppDatabase.getDatabase(this)
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
 
-        // Register hardware step sensor with batching
-        stepCounterSensor?.let { sensor ->
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                    sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL, 5_000_000)
-                } else {
-                    sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_NORMAL)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error registering step sensor listener: ${e.message}", e)
-            }
-        }
+        // Discover available sensors
+        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+        stepDetectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
+        accelerometerSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+        // Register appropriate sensor for step detection
+        registerSensors()
 
         createNotificationChannel()
         startInForeground()
@@ -92,6 +91,38 @@ class StepService : Service(), SensorEventListener {
                 checkAndHandleDateChange()
                 delay(20_000)
             }
+        }
+    }
+
+    private fun registerSensors() {
+        try {
+            if (stepCounterSensor != null) {
+                // Hardware step counter with immediate UI delivery (no delayed batching)
+                sensorManager.registerListener(
+                    this,
+                    stepCounterSensor,
+                    SensorManager.SENSOR_DELAY_UI
+                )
+                Log.d(TAG, "Registered TYPE_STEP_COUNTER")
+            } else if (stepDetectorSensor != null) {
+                // Hardware step detector
+                sensorManager.registerListener(
+                    this,
+                    stepDetectorSensor,
+                    SensorManager.SENSOR_DELAY_UI
+                )
+                Log.d(TAG, "Registered TYPE_STEP_DETECTOR")
+            } else if (accelerometerSensor != null) {
+                // Accelerometer fallback for devices/emulators without dedicated pedometer
+                sensorManager.registerListener(
+                    this,
+                    accelerometerSensor,
+                    SensorManager.SENSOR_DELAY_GAME
+                )
+                Log.d(TAG, "Registered TYPE_ACCELEROMETER fallback")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error registering step sensor listener: ${e.message}", e)
         }
     }
 
@@ -111,15 +142,39 @@ class StepService : Service(), SensorEventListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         checkAndHandleDateChange()
-        if (intent?.action == ACTION_ADD_MANUAL_STEPS) {
-            val stepsToAdd = intent.getIntExtra(EXTRA_STEPS_TO_ADD, 100)
-            val currentSteps = prefs.getInt(KEY_TODAY_STEPS, 0)
-            val newSteps = currentSteps + stepsToAdd
-            val currentDateString = LocalDate.now().toString()
-            prefs.edit().putInt(KEY_TODAY_STEPS, newSteps).apply()
-            updateDatabaseAndWidget(currentDateString, newSteps)
-        } else {
-            startInForeground()
+        val currentDateString = LocalDate.now().toString()
+
+        when (intent?.action) {
+            ACTION_ADD_MANUAL_STEPS -> {
+                val stepsToAdd = intent.getIntExtra(EXTRA_STEPS_TO_ADD, 100)
+                val currentSteps = prefs.getInt(KEY_TODAY_STEPS, 0)
+                val newSteps = currentSteps + stepsToAdd
+                val lastKnownTotal = prefs.getInt(KEY_LAST_KNOWN_TOTAL_STEPS, 0)
+
+                val editor = prefs.edit().putInt(KEY_TODAY_STEPS, newSteps)
+                if (prefs.contains(KEY_SENSOR_OFFSET)) {
+                    val currentOffset = prefs.getInt(KEY_SENSOR_OFFSET, 0)
+                    editor.putInt(KEY_SENSOR_OFFSET, (currentOffset - stepsToAdd).coerceAtLeast(0))
+                } else if (lastKnownTotal > 0) {
+                    editor.putInt(KEY_SENSOR_OFFSET, (lastKnownTotal - newSteps).coerceAtLeast(0))
+                }
+                editor.apply()
+                updateDatabaseAndWidget(currentDateString, newSteps)
+            }
+            ACTION_RESET_ALL_STEPS, ACTION_RESET_TODAY_STEPS -> {
+                val lastKnownTotal = prefs.getInt(KEY_LAST_KNOWN_TOTAL_STEPS, 0)
+                val editor = prefs.edit()
+                    .putInt(KEY_TODAY_STEPS, 0)
+                    .putString(KEY_LAST_DATE, currentDateString)
+                if (lastKnownTotal > 0) {
+                    editor.putInt(KEY_SENSOR_OFFSET, lastKnownTotal)
+                }
+                editor.apply()
+                updateDatabaseAndWidget(currentDateString, 0)
+            }
+            else -> {
+                startInForeground()
+            }
         }
         return START_STICKY
     }
@@ -222,56 +277,85 @@ class StepService : Service(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event == null || event.sensor.type != Sensor.TYPE_STEP_COUNTER) return
-        val totalStepsSinceBoot = event.values[0].toInt()
+        if (event == null) return
+        val sensorType = event.sensor.type
 
-        // Cache last total reading from hardware sensor
-        prefs.edit().putInt(KEY_LAST_KNOWN_TOTAL_STEPS, totalStepsSinceBoot).apply()
+        when (sensorType) {
+            Sensor.TYPE_STEP_COUNTER -> {
+                val totalStepsSinceBoot = event.values[0].toInt()
+                prefs.edit().putInt(KEY_LAST_KNOWN_TOTAL_STEPS, totalStepsSinceBoot).apply()
 
-        val currentDate = LocalDate.now()
-        val currentDateString = currentDate.toString()
-        val lastStoredDateString = prefs.getString(KEY_LAST_DATE, "") ?: ""
+                val currentDate = LocalDate.now()
+                val currentDateString = currentDate.toString()
+                val lastStoredDateString = prefs.getString(KEY_LAST_DATE, "") ?: ""
 
-        if (lastStoredDateString.isEmpty()) {
-            prefs.edit()
-                .putString(KEY_LAST_DATE, currentDateString)
-                .putInt(KEY_SENSOR_OFFSET, totalStepsSinceBoot)
-                .putInt(KEY_TODAY_STEPS, 0)
-                .apply()
-            updateDatabaseAndWidget(currentDateString, 0)
-            return
-        }
+                if (lastStoredDateString.isEmpty() || currentDateString != lastStoredDateString) {
+                    val yesterdaySteps = prefs.getInt(KEY_TODAY_STEPS, 0)
+                    if (lastStoredDateString.isNotEmpty()) {
+                        serviceScope.launch {
+                            database.stepDao().insertOrUpdate(
+                                DayStepEntry(lastStoredDateString, yesterdaySteps, yesterdaySteps >= currentDailyGoal)
+                            )
+                        }
+                    }
+                    prefs.edit()
+                        .putString(KEY_LAST_DATE, currentDateString)
+                        .putInt(KEY_SENSOR_OFFSET, totalStepsSinceBoot)
+                        .putInt(KEY_TODAY_STEPS, 0)
+                        .apply()
+                    updateDatabaseAndWidget(currentDateString, 0)
+                    return
+                }
 
-        val lastStoredDate = try { LocalDate.parse(lastStoredDateString) } catch (e: Exception) { currentDate }
+                // Same day: initialize offset if not present
+                if (!prefs.contains(KEY_SENSOR_OFFSET)) {
+                    val currentToday = prefs.getInt(KEY_TODAY_STEPS, 0)
+                    val initialOffset = (totalStepsSinceBoot - currentToday).coerceAtLeast(0)
+                    prefs.edit().putInt(KEY_SENSOR_OFFSET, initialOffset).apply()
+                }
 
-        if (currentDate.isAfter(lastStoredDate)) {
-            // New day: archive yesterday and reset offset
-            val offset = prefs.getInt(KEY_SENSOR_OFFSET, totalStepsSinceBoot)
-            val finalYesterdaySteps = (totalStepsSinceBoot - offset).coerceAtLeast(0)
+                val offset = prefs.getInt(KEY_SENSOR_OFFSET, totalStepsSinceBoot)
+                var currentTodaySteps = totalStepsSinceBoot - offset
 
-            serviceScope.launch {
-                database.stepDao().insertOrUpdate(
-                    DayStepEntry(lastStoredDateString, finalYesterdaySteps, finalYesterdaySteps >= currentDailyGoal)
-                )
-                database.stepDao().insertOrUpdate(
-                    DayStepEntry(currentDateString, 0, false)
-                )
+                if (currentTodaySteps < 0) {
+                    // Device rebooted: sensor reset to zero
+                    val prevToday = prefs.getInt(KEY_TODAY_STEPS, 0)
+                    val newOffset = (totalStepsSinceBoot - prevToday).coerceAtLeast(0)
+                    prefs.edit().putInt(KEY_SENSOR_OFFSET, newOffset).apply()
+                    currentTodaySteps = (totalStepsSinceBoot - newOffset).coerceAtLeast(0)
+                }
+
+                prefs.edit().putInt(KEY_TODAY_STEPS, currentTodaySteps).apply()
+                updateDatabaseAndWidget(currentDateString, currentTodaySteps)
             }
-            prefs.edit()
-                .putString(KEY_LAST_DATE, currentDateString)
-                .putInt(KEY_SENSOR_OFFSET, totalStepsSinceBoot)
-                .putInt(KEY_TODAY_STEPS, 0)
-                .apply()
-            updateDatabaseAndWidget(currentDateString, 0)
-        } else {
-            val offset = prefs.getInt(KEY_SENSOR_OFFSET, totalStepsSinceBoot)
-            var currentTodaySteps = totalStepsSinceBoot - offset
-            if (currentTodaySteps < 0) {
-                prefs.edit().putInt(KEY_SENSOR_OFFSET, totalStepsSinceBoot).apply()
-                currentTodaySteps = 0
+            Sensor.TYPE_STEP_DETECTOR -> {
+                // Each detector event represents a physical step taken
+                checkAndHandleDateChange()
+                val currentDateString = LocalDate.now().toString()
+                val currentTodaySteps = prefs.getInt(KEY_TODAY_STEPS, 0) + 1
+                prefs.edit().putInt(KEY_TODAY_STEPS, currentTodaySteps).apply()
+                updateDatabaseAndWidget(currentDateString, currentTodaySteps)
             }
-            prefs.edit().putInt(KEY_TODAY_STEPS, currentTodaySteps).apply()
-            updateDatabaseAndWidget(currentDateString, currentTodaySteps)
+            Sensor.TYPE_ACCELEROMETER -> {
+                // If neither hardware step counter nor detector is available, detect steps via accelerometer peaks
+                if (stepCounterSensor == null && stepDetectorSensor == null) {
+                    val x = event.values[0]
+                    val y = event.values[1]
+                    val z = event.values[2]
+                    val magnitude = Math.sqrt((x * x + y * y + z * z).toDouble()).toFloat()
+                    val now = System.currentTimeMillis()
+
+                    // Walking produces dynamic acceleration spikes above normal 9.8 m/s²
+                    if (magnitude > 11.8f && (now - lastAccelStepTimeMs) > 300) {
+                        lastAccelStepTimeMs = now
+                        checkAndHandleDateChange()
+                        val currentDateString = LocalDate.now().toString()
+                        val currentTodaySteps = prefs.getInt(KEY_TODAY_STEPS, 0) + 1
+                        prefs.edit().putInt(KEY_TODAY_STEPS, currentTodaySteps).apply()
+                        updateDatabaseAndWidget(currentDateString, currentTodaySteps)
+                    }
+                }
+            }
         }
     }
 

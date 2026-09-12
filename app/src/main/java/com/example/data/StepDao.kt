@@ -25,4 +25,7 @@ interface StepDao {
 
     @Query("DELETE FROM daily_steps WHERE date = :date")
     suspend fun deleteByDate(date: String)
+
+    @Query("DELETE FROM daily_steps")
+    suspend fun deleteAll()
 }
